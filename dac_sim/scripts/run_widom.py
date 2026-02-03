@@ -1,16 +1,12 @@
 from typing import Optional, Union, IO, Literal
 from pathlib import Path
-
 from tqdm import tqdm
 import pandas as pd
 from fire import Fire
 from ase.io import read
 from ase.build import molecule
-
 import torch
 from dac_sim.widom_insertion import WidomInsertion
-
-
 def run_widom(
     path_cif: str,
     gas: str = "CO2",
@@ -35,7 +31,6 @@ def run_widom(
     append_trajectory: bool = False,
 ):
     """Perform Widom insertion simulation to calculate Henry coefficient and heat of adsorption.
-
     Parameters
     ----------
     path_cif : str
@@ -87,27 +82,29 @@ def run_widom(
     if device == "cuda" and not torch.cuda.is_available():
         print("CUDA is not available, using CPU instead")
         device = "cpu"
-
     # Initialize gas molecule
     try:
-        gas_atoms = molecule(gas)
+        if Path(gas).exists():
+            gas_atoms = read(gas)
+        else:
+            gas_atoms = molecule(gas)
     except ValueError:
         raise ValueError(f"Gas molecule {gas} is not supported")
-
     # Set up save directory
     if save_dir is None:
-        save_dir = Path(path_cif)
+        if Path(path_cif).is_file():
+            save_dir = Path(path_cif).parent
+        else:
+            save_dir = Path(path_cif)
     else:
         save_dir = Path(save_dir)
         save_dir.mkdir(exist_ok=True, parents=True)
-
     # Collect CIF files
     path_cif = Path(path_cif)
     if path_cif.is_dir():
         cif_files = list(path_cif.glob("*.cif"))
     else:
         cif_files = [path_cif]
-
     # Check if the results file exist
     result_files = [
         f.stem.replace(f"result_widom_{gas.lower()}_", "")
@@ -116,7 +113,6 @@ def run_widom(
     print(f"Found {len(result_files)} results in {save_dir}")
     cif_files = [f for f in cif_files if f.stem not in result_files]
     print(f"{len(cif_files)} CIF files to run Widom insertion")
-
     # Run Widom insertion for each CIF file
     for filename in tqdm(cif_files):
         print(f"Running Widom insertion for {filename}")
@@ -138,7 +134,6 @@ def run_widom(
                 path_trajectory = trajectory
         else:
             path_trajectory = None
-
         widom = WidomInsertion(
             structure=read(filename),
             gas=gas_atoms,
@@ -161,7 +156,6 @@ def run_widom(
             fold=fold,
             random_seed=random_seed,
         )
-
         # Save the result
         result_data = {
             "filename": filename.name,
@@ -175,7 +169,5 @@ def run_widom(
         result_df = pd.DataFrame([result_data])
         result_df.to_csv(path_result, index=False)
         print(f"saving result to {path_result}")
-
-
 if __name__ == "__main__":
     Fire(run_widom)
