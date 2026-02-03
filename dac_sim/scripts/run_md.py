@@ -1,15 +1,11 @@
 from typing import Optional, Union, IO, Literal
 from pathlib import Path
-
 from tqdm import tqdm
 from fire import Fire
 from ase.io import read
 from ase.build import molecule
-
 import torch
 from dac_sim.molecule_dynamic import MolecularDynamic
-
-
 def run_md(
     path_cif: str,
     gas_list: list[str] = ["CO2", "H2O"],
@@ -33,7 +29,6 @@ def run_md(
     loginterval: int = 10,
 ):
     """Perform Molecular Dynamic simulation with gas molecules in MOFs.
-
     Parameters
     ----------
     path_cif : str
@@ -95,20 +90,25 @@ def run_md(
     if device == "cuda" and not torch.cuda.is_available():
         print("CUDA is not available, using CPU instead")
         device = "cpu"
-
     # Initialize gas molecules
     try:
-        gas_atoms_list = [molecule(gas) for gas in gas_list]
+        gas_atoms_list = []
+        for gas in gas_list:
+            if Path(gas).exists():
+                gas_atoms_list.append(read(gas))
+            else:
+                gas_atoms_list.append(molecule(gas))
     except Exception as e:
         raise Exception(f"Error initializing gas molecules: {e}")
-
     # Set up save directory
     if save_dir is None:
-        save_dir = Path(path_cif)
+        if Path(path_cif).is_file():
+            save_dir = Path(path_cif).parent
+        else:
+            save_dir = Path(path_cif)
     else:
         save_dir = Path(save_dir)
         save_dir.mkdir(exist_ok=True, parents=True)
-
     # Collect CIF files
     path_cif = Path(path_cif)
     if path_cif.is_dir():
@@ -116,7 +116,6 @@ def run_md(
         print(f"Found {len(cif_files)} CIF files in {path_cif}")
     else:
         cif_files = [path_cif]
-
     # Check if the results file exist
     result_files = [
         f.stem.replace(f"result_md_{''.join(gas_list)}_", "")
@@ -125,12 +124,10 @@ def run_md(
     print(f"Found {len(result_files)} results in {save_dir}")
     cif_files = [f for f in cif_files if f.stem not in result_files]
     print(f"{len(cif_files)} CIF files to run Molecular Dynamic")
-
     for cif_file in tqdm(cif_files):
         print(f"Running Molecular Dynamic for {cif_file.stem}")
         # load the structure and gas
         structure = read(cif_file)
-
         # run the molecular dynamic simulation
         if save_trajectory:
             if trajectory is None:
@@ -169,15 +166,11 @@ def run_md(
             num_md_steps=num_md_steps,
             min_interplanar_distance=min_interplanar_distance,
         )
-
         # Calculate the diffusion coefficient
         result = md.calculate_diffusion_coefficient()
-
         # Save the result
         path_result = save_dir / f"result_md_{''.join(gas_list)}_{cif_file.stem}.csv"
         result.to_csv(path_result)
         print(f"saving result to {path_result}")
-
-
 if __name__ == "__main__":
     Fire(run_md)
