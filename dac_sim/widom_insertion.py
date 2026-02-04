@@ -2,22 +2,19 @@ from typing import IO, Union, Literal, Optional, Dict, Any
 from pathlib import Path
 from collections import defaultdict
 import time
-
 from tqdm import tqdm
 import numpy as np
+import MDAnalysis as mda
 from ase import Atoms
 from ase import units
 from ase.optimize.optimize import Dynamics
 from ase.io.trajectory import Trajectory
 from mace.calculators import mace_mp
-
 import torch
 from dac_sim.grid import get_accessible_positions
 from dac_sim.molecule import add_molecule
 from dac_sim.optimize import optimize_atoms
 from dac_sim import DEFAULT_MODEL_PATH
-
-
 class WidomInsertion(Dynamics):
     def __init__(
         self,
@@ -36,7 +33,6 @@ class WidomInsertion(Dynamics):
     ):
         """
         Widom insertion algorithm to calculate the Henry coefficient and heat of adsorption.
-
         Parameters
         ----------
         structure : Atoms
@@ -68,29 +64,24 @@ class WidomInsertion(Dynamics):
         self.temperature = temperature
         self.init_structure_optimize = init_structure_optimize
         self.init_gas_optimize = init_gas_optimize
-
         # Check device availability
         device = self._configure_device(device)
-
         # Set up calculator
         self.calculator = self._initialize_calculator(
             model_path, device, default_dtype, dispersion
         )
-
         super().__init__(
             structure,
             logfile=logfile,
             trajectory=None,
             append_trajectory=append_trajectory,
         )
-
         if trajectory is not None:
             if isinstance(trajectory, str):
                 mode = "a" if append_trajectory else "w"
                 self.trajectory = self.closelater(Trajectory(trajectory, mode=mode))
             else:
                 self.trajectory = trajectory
-
     def _configure_device(self, device: str) -> str:
         if device not in ["cuda", "cpu"]:
             raise ValueError("Device must be either 'cuda' or 'cpu'")
@@ -98,7 +89,6 @@ class WidomInsertion(Dynamics):
             print("CUDA is not available, using CPU instead")
             device = "cpu"
         return device
-
     def _initialize_calculator(
         self,
         model_path: Optional[str],
@@ -116,13 +106,11 @@ class WidomInsertion(Dynamics):
             default_dtype=default_dtype,
             dispersion=dispersion,
         )
-
     def todict(self):
         return {
             "type": "widom-insertion",
             "md-type": self.__class__.__name__,
         }
-
     def log(
         self,
         interaction_energy,
@@ -133,14 +121,12 @@ class WidomInsertion(Dynamics):
     ):
         if self.logfile is None:
             return
-
         if self.nsteps == 0:
             header = (
                 f"{'Step':>6} {'Time':>8} {'Interaction E':>15} "
                 f"{'Total E':>15} {'Struct E':>15} {'Gas E':>15} {'Boltzmann F':>15}\n"
             )
             self.logfile.write(header)
-
         current_time = time.strftime("%H:%M:%S", time.localtime())
         log_entry = (
             f"{self.nsteps:6d} {current_time:>8} "
@@ -149,15 +135,12 @@ class WidomInsertion(Dynamics):
         )
         self.logfile.write(log_entry)
         self.logfile.flush()
-
     def log_results(self, results: Dict[str, Any]) -> None:
         if self.logfile is None:
             return
-
         if self.nsteps == 0:
             header = "Total Results:\n"
             self.logfile.write(header)
-
         for k, v in results.items():
             if not v:
                 continue
@@ -166,7 +149,6 @@ class WidomInsertion(Dynamics):
             log_entry = f"{k:28}: {mean:15.6f} ± {std:10.6f} | {str(v)}\n"
             self.logfile.write(log_entry)
         self.logfile.flush()
-
     def run(
         self,
         num_insertions: int = 5000,
@@ -178,7 +160,6 @@ class WidomInsertion(Dynamics):
     ) -> Dict[str, Any]:
         """
         Run the Widom insertion algorithm to calculate the Henry coefficient and heat of adsorption.
-
         Parameters
         ----------
         num_insertions : int, default=5000
@@ -193,7 +174,6 @@ class WidomInsertion(Dynamics):
             Number of repetitions of Widom insertion to improve statistics.
         random_seed : int, optional
             Seed for the random number generator for reproducibility.
-
         Returns
         -------
         Dict[str, Any]
@@ -201,7 +181,6 @@ class WidomInsertion(Dynamics):
         """
         structure = self.atoms.copy()
         gas = self.gas.copy()
-
         # Optimize structure and gas molecule
         if self.init_structure_optimize:
             print("Optimizing the structure...")
@@ -215,7 +194,6 @@ class WidomInsertion(Dynamics):
             )
             if gas is None:
                 raise ValueError("Failed to optimize gas molecule")
-
         # Calculate accessible positions
         ret = get_accessible_positions(
             structure=structure,
@@ -232,12 +210,10 @@ class WidomInsertion(Dynamics):
         # Calculate energies for structure and gas
         energy_structure = self.calculator.get_potential_energy(structure)
         energy_gas = self.calculator.get_potential_energy(gas)
-
         # Set random seed if provided
         if random_seed is not None:
             np.random.seed(random_seed)
             print(f"Setting random seed: {random_seed}")
-
         # Run Widom insertion algorithm
         results = defaultdict(list)
         for i in range(fold):
@@ -257,29 +233,35 @@ class WidomInsertion(Dynamics):
                     interaction_energies[i] = 1e10  # lead to zero boltzmann factor
                     self.nsteps += 1
                     continue
-
                 # Add gas molecule to the accessible position
                 pos = pos_grid[rand_idx]
                 added_gas = add_molecule(gas, rotate=True, translate=pos)
+                # Check for overlaps between gas atoms and framework atoms
+                gas_pos = added_gas.get_positions()
+                framework_pos = structure.get_positions()
+                box = structure.cell.cellpar()
+                dist_matrix = mda.lib.distances.distance_array(
+                    gas_pos, framework_pos, box=box
+                )
+                if np.min(dist_matrix) < cutoff_distance:
+                    interaction_energies[i] = 1e10  # lead to zero boltzmann factor
+                    self.nsteps += 1
+                    continue
                 structure_with_gas = structure + added_gas
                 structure_with_gas.wrap()  # wrap atoms to unit cell
-
                 # Calculate interaction energy
                 structure_with_gas.calc = self.calculator
                 total_energy = structure_with_gas.get_potential_energy()  # [eV]
                 interaction_energy = (
                     total_energy - energy_structure - energy_gas
                 )  # [eV]
-
                 # Handle invalid interaction energy
                 if interaction_energy < -1.25:
                     interaction_energy = 1e10  # lead to zero boltzmann factor
-
                 interaction_energies[i] = interaction_energy
                 boltzmann_factor = np.exp(
                     -interaction_energy / (self.temperature * units._k / units._e)
                 )
-
                 # Log results
                 self.log(
                     interaction_energy,
@@ -289,17 +271,14 @@ class WidomInsertion(Dynamics):
                     boltzmann_factor,
                 )
                 self.nsteps += 1
-
                 # Write trajectory
                 if self.trajectory is not None:
                     self.trajectory.write(structure_with_gas)
-
             # Calculate ensemble averages properties
             # units._e [J/eV], units._k [J/K], units._k / units._e # [eV/K]
             boltzmann_factor = np.exp(
                 -interaction_energies / (self.temperature * units._k / units._e)
             )
-
             # KH = <exp(-E/RT)> / (R * T)
             atomic_density = self._calculate_atomic_density(structure)  # [kg / m^3]
             kh = (
@@ -309,28 +288,22 @@ class WidomInsertion(Dynamics):
                 / self.temperature  # T = [K] -> [mol/ m^3 Pa]
                 / atomic_density  #  = [kg / m^3] -> [mol / kg Pa]
             )  # [mol/kg Pa]
-
             # U = < E * exp(-E/RT) > / <exp(-E/RT)> # [eV]
             u = (interaction_energies * boltzmann_factor).sum() / boltzmann_factor.sum()
-
             # Qst = U - RT # [kJ/mol]
             qst = (u * units._e - units._k * self.temperature) * units._Nav * 1e-3
-
             results["henry_coefficient"].append(kh)
             results["averaged_interaction_energy"].append(u)
             results["heat_of_adsorption"].append(qst)
             self.log_results(results)
         return results
-
     def _calculate_atomic_density(self, atoms: Atoms) -> float:
         """
         Calculate atomic density of the atoms.
-
         Parameters
         ----------
         atoms : Atoms
             The Atoms object to operate on.
-
         Returns
         -------
         float
