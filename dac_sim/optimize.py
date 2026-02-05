@@ -16,9 +16,9 @@ from dac_sim import DEFAULT_MODEL_PATH
 class GeometryOptimization:
     def __init__(
         self,
-        num_total_optimization: int = 30,
-        num_internal_steps: int = 50,
-        num_cell_steps: int = 50,
+        num_total_optimization: int = 300,
+        num_internal_steps: int = 500,
+        num_cell_steps: int = 500,
         fmax: float = 0.05,
         cell_relax: bool = True,
         model_path: Optional[str] = None,
